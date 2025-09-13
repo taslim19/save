@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 import aiofiles
 import pymongo
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
-from pyrogram.errors import ChannelBanned, ChannelInvalid, ChannelPrivate, ChatIdInvalid, ChatInvalid, RPCError
+from pyrogram.errors import ChannelBanned, ChannelInvalid, ChannelPrivate, ChatIdInvalid, ChatInvalid, RPCError, PeerIdInvalid, UserIsBlocked, InputUserDeactivated
 from pyrogram.enums import MessageMediaType, ParseMode
 from telethon.tl.types import DocumentAttributeVideo
 from telethon import events, Button
@@ -373,6 +373,17 @@ class SmartTelegramBot:
             return int(parts[0]), int(parts[1])
         return int(target), None
     
+    async def validate_chat_access(self, chat_id: int) -> bool:
+        """Validate that the bot can send messages to the specified chat"""
+        try:
+            # Try to get chat info to validate access
+            chat = await app.get_chat(chat_id)
+            return True
+        except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated, ChatInvalid, ChatIdInvalid):
+            return False
+        except Exception:
+            return False
+    
     async def process_user_caption(self, original_caption: str, user_id: int) -> str:
         """Process caption with user preferences"""
         custom_caption = self.user_caption_prefs.get(str(user_id), "") or self.db.get_user_data(user_id, "custom_caption", "")
@@ -473,6 +484,9 @@ class SmartTelegramBot:
             await result.copy(LOG_GROUP)
             return result
             
+        except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated) as e:
+            await app.send_message(LOG_GROUP, f"**Cannot send message:** {str(e)}")
+            raise
         except Exception as e:
             await app.send_message(LOG_GROUP, f"**Pyrogram Upload Failed:** {str(e)}")
             raise
@@ -540,6 +554,9 @@ class SmartTelegramBot:
                 thumb=thumb_path
             )
             
+        except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated) as e:
+            await app.send_message(LOG_GROUP, f"**Cannot send message:** {str(e)}")
+            raise
         except Exception as e:
             await app.send_message(LOG_GROUP, f"**SpyLib Upload Failed:** {str(e)}")
             raise
@@ -623,9 +640,14 @@ class SmartTelegramBot:
             if not chat_id:
                 return
             
-            # Get target chat configuration
+            # Get target chat configuration - use message.chat.id as default instead of user ID
             target_chat_str = self.user_chat_ids.get(message.chat.id, str(message.chat.id))
             target_chat_id, topic_id = self.parse_target_chat(target_chat_str)
+            
+            # Validate that we can send messages to the target chat
+            if not await self.validate_chat_access(target_chat_id):
+                await app.edit_message_text(sender, edit_id, "❌ Cannot send messages to this chat. Please start a conversation with the bot first.")
+                return
             
             # Fetch message
             msg = await userbot.get_messages(chat_id, msg_id)
@@ -692,6 +714,8 @@ class SmartTelegramBot:
                     
         except (ChannelBanned, ChannelInvalid, ChannelPrivate, ChatIdInvalid, ChatInvalid) as e:
             await app.edit_message_text(sender, edit_id, "❌ Access denied. Have you joined the channel?")
+        except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated) as e:
+            await app.edit_message_text(sender, edit_id, f"❌ Cannot send message: {str(e)}")
         except Exception as e:
             print(f"Error in message handling: {e}")
             await app.send_message(LOG_GROUP, f"**Error:** {str(e)}")
